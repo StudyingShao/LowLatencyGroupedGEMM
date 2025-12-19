@@ -59,8 +59,8 @@ set(GPU_ARCHS "" CACHE STRING
   "List of GPU architectures (semicolon-separated) to be compiled for.")
 
 if("${GPU_ARCHS}" STREQUAL "")
-	# set(GPU_ARCHS "100a")
-	set(GPU_ARCHS "90a")
+	set(GPU_ARCHS "100a")
+	# set(GPU_ARCHS "90a")
 endif()
 
 foreach(arch ${GPU_ARCHS})
