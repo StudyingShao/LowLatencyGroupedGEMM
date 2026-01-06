@@ -3,6 +3,8 @@
 #include "cutlass/numeric_conversion.h"
 #include "cutlass/array.h"
 
+#include "cutlass/device_kernel.h"
+
 #include "cutlass/gemm/device/gemv.h"
 #include "cutlass/gemm/kernel/gemv.h"
 
@@ -14,23 +16,25 @@ const bool DEBUG_INPUT_B = false;
 
 void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
 {
-    // using ElementA = cutlass::int4b_t;
+    using ElementA = cutlass::int4b_t;
     // using ElementA = cutlass::float_e2m1_t;
-    using ElementA = cutlass::float_e4m3_t;
+    // using ElementA = cutlass::float_e4m3_t;
     
     using ElementB = cutlass::float_e4m3_t;
     
     using ElementC = __nv_bfloat16;
     // using ElementC = float;
-    using ElementSF = cutlass::float_e4m3_t;
+    // using ElementSF = cutlass::float_e4m3_t;
+    using ElementSF = cutlass::half_t;
     // using ElementSF = unsigned int;
     
     const int kElementsPerAccess = 128 / cutlass::sizeof_bits<ElementB>::value;
+    // const int kElementsPerAccess = 8;
     const int kThreadCount = 128;
     const int kThreadsPerRow = 8;
     const int kSplitKSlices = 1;
     
-    const int SFVecSize = 16;
+    const int SFVecSize = 128;
 
     // host buffer
     ElementA* h_A;
@@ -68,25 +72,17 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
 
     // scale factor
     ElementSF *h_fp8_SF_A;
-    ElementSF *h_fp8_SF_B;
     ElementSF *d_fp8_SF_A;
-    ElementSF *d_fp8_SF_B;
 
-    int SFBlocksByK = (K / SFVecSize + 3) / 4; // K contribution
-    int SFBlocksByM = (M + 127) / 128;         // M contribution
-    int SFBlocksByN = (N + 127) / 128;         // N contribution
-    // printf("SFBlocksByK = %d, SFBlocksByM = %d, SFBlocksByN = %d\n", SFBlocksByK, SFBlocksByM, SFBlocksByN);
-
-    h_fp8_SF_A = (ElementSF*) malloc(SFBlocksByK * SFBlocksByM * 512 * sizeof(ElementSF));
-    h_fp8_SF_B = (ElementSF*) malloc(SFBlocksByK * SFBlocksByN * 512 * sizeof(ElementSF));
-    cudaMalloc((void **)&d_fp8_SF_A, SFBlocksByK * SFBlocksByM * 512 * sizeof(ElementSF));
-    cudaMalloc((void **)&d_fp8_SF_B, SFBlocksByK * SFBlocksByN * 512 * sizeof(ElementSF));
+    h_fp8_SF_A = (ElementSF*) malloc(B * M * K / SFVecSize * sizeof(ElementSF));
+    cudaMalloc((void **)&d_fp8_SF_A, B * M * K / SFVecSize * sizeof(ElementSF));
 
     srand(0);
 
-
     for (int b = 0; b < B; ++b) {
         for (int k = 0; k < K; ++k) {
+
+            // Init A
             for (int m = 0; m < M; ++m) {
                 if (cutlass::sizeof_bits<ElementA>::value == 4) {
                     uint8_t *ptr = reinterpret_cast<uint8_t *>(h_A);
@@ -99,6 +95,12 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
                             ptr[b * M * K / 2 + m * K / 2 + k / 2] = uint8_t(rand() % 16 | ((rand() % 16) << 4));
                         }
                     }
+                
+                    // Init A scale
+                    if (k % SFVecSize == 0) {
+                        h_fp8_SF_A[(b * M * K + m * K + k) / SFVecSize] = ElementSF((rand() % 9) - 16);
+                    }
+                
                 }
                 else {
                     if constexpr (DEBUG_INPUT_A) {
@@ -108,8 +110,9 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
                         h_A[b * M * K + m * K + k] = ElementA(rand() % 16);
                     }
                 }
-            }
+            }            
             
+            // Init B
             for (int n = 0; n < N; ++n) {
                 if constexpr (DEBUG_INPUT_B) {
                     h_B[b * N * K + n * K + k] = ElementB(1);
@@ -148,8 +151,7 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     // copy input tensor from host to device
     cudaMemcpy(d_A, h_A, B * M * K * cutlass::sizeof_bits<ElementA>::value / 8, cudaMemcpyHostToDevice);
     cudaMemcpy(d_B, h_B, B * K * N * sizeof(ElementB), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fp8_SF_A, h_fp8_SF_A, SFBlocksByK * SFBlocksByM * 512 * sizeof(ElementSF), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_fp8_SF_B, h_fp8_SF_B, SFBlocksByK * SFBlocksByN * 512 * sizeof(ElementSF), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fp8_SF_A, h_fp8_SF_A, B * M * K / SFVecSize * sizeof(ElementSF), cudaMemcpyHostToDevice);
 
     using LayoutA = cutlass::layout::RowMajor;
     using ElementAccumulator = float;
@@ -165,9 +167,34 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     using cutlass_Gemv_kernel = cutlass::gemm::kernel::Gemv<
                                     ElementA, LayoutA, ElementB, ElementC, 
                                     ElementAccumulator, Epilogue, 
-                                    kElementsPerAccess, kThreadCount, kThreadsPerRow, // kSplitKSlices,
+                                    kElementsPerAccess, kThreadCount, kThreadsPerRow, kSplitKSlices,
                                     ElementSF, SFVecSize>;
     using cutlass_Gemv_device = cutlass::gemm::device::Gemv<cutlass_Gemv_kernel>;
+
+    
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    // query occupancy after setting smem size
+    int max_active_blocks = -1;
+    cudaError_t result = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &max_active_blocks,
+        cutlass::device_kernel<cutlass_Gemv_kernel>,
+        cutlass_Gemv_kernel::kThreadCount,
+        0);
+
+    if (cudaSuccess != result) {
+        result = cudaGetLastError();
+        std::cout << "  cudaOccupancyMaxActiveBlocksPerMultiprocessor() returned error: "
+        << cudaGetErrorString(result) << std::endl;
+    }
+
+    int sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+    
+    float CTA_count = B * (M / 64) * kSplitKSlices;
+    float wave_capacity = max_active_blocks * sm_count;
+    float wave_num = CTA_count / wave_capacity;
+
+    printf("maximum_active_blocks %d sm_count %d wave_num %f\n", max_active_blocks, sm_count, wave_num);
+    //////////////////////////////////////////////////////////////////////////////////////////////
 
     cutlass_Gemv_kernel::matrix_A_interleave<ElementA, kElementsPerAccess>(d_A_interleaved, d_A, B, M, K);
 
@@ -216,7 +243,6 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
         d_N,            // N
         K,              // K
         N,              // max_N
-        kSplitKSlices,
         B,              // batch count
         {alpha, beta},
         {(ElementA *)d_A_interleaved, K},
@@ -228,7 +254,6 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
         M * N,          // batch_stride_C, M x N
         M * N,          // batch_stride_D, M x N
         d_fp8_SF_A,
-        d_fp8_SF_B
     };
 
     auto can_implement = gemv.can_implement(args);
@@ -251,7 +276,7 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     cudaEventCreate(&_event_start_);
     cudaEventCreate(&_event_end_);
     
-    cutlass::Status run_status;
+    cutlass::Status run_status = cutlass::Status::kInvalid;
     
     for (int i = 0; i < warm_up_runs; i++)
     {
@@ -276,7 +301,7 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     float GB_total = (bytes_of_A + bytes_of_B) / 1024 / 1024 / 1024;
     
     float LDG_throughput = GB_total / _event_time_once_ * 1E3;
-    printf("GEMM Shape B %d M %d N %d K %d, MEM size = %f GB, LDG_throughput %f GB/s MEM SOL %.2f %\t", B, M, N, K, GB_total, LDG_throughput, LDG_throughput / 4000 * 100);
+    printf("GEMM Shape B %d M %d N %d K %d, MEM size = %f GB, LDG_throughput %f GB/s MEM SOL %.2f %%\t", B, M, N, K, GB_total, LDG_throughput, LDG_throughput / 4000 * 100);
     cudaDeviceSynchronize();
     printf("string: %s\n", cudaGetErrorString(cudaGetLastError()));
 
@@ -326,8 +351,10 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
                         }
     
                         ElementB val_B = h_B[b * N * K + n * K + k];
+
+                        ElementSF val_SFA = h_fp8_SF_A[(b * M * K + m * K + k) / SFVecSize];
     
-                        accu[k_slice_id] += cutlass::half_t(lut[idx]) * cutlass::half_t(val_B);
+                        accu[k_slice_id] += cutlass::half_t(lut[idx]) * cutlass::half_t(val_B) * float(val_SFA);
                     }
                     else {
                         ElementA val_A = h_A[b * M * K + m * K + k];
