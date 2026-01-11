@@ -1,4 +1,5 @@
 #include <iostream>
+#include <chrono>
 #include "cutlass/numeric_types.h"
 #include "cutlass/numeric_conversion.h"
 #include "cutlass/array.h"
@@ -6,10 +7,13 @@
 #include "cutlass/gemm/device/gemv.h"
 #include "cutlass/gemm/kernel/gemv.h"
 
+#include "utils.h"
+
+const bool ENABLE_TIMER = false;
 const bool PRINT_INPUT = false;
 const bool PRINT_INPUT_SF_A = false;
-const bool DEBUG_INTERLEAVE = false;
 const bool PRINT_OUTPUT = false;
+const bool DEBUG_INTERLEAVE = false;
 const bool DEBUG_INPUT_A = false;
 const bool DEBUG_INPUT_B = false;
 const bool DEBUG_INPUT_SFA = false;
@@ -96,65 +100,23 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     cudaMalloc((void **)&d_SFA, B * M * K / SFVecSize * sizeof(ElementSF));
     cudaMalloc((void **)&d_SFA_padded, cutlass_Gemv_kernel::get_SF_mem_size(B, M, K));
 
-    srand(0);
+    auto init_start = std::chrono::high_resolution_clock::now();
 
-    for (int b = 0; b < B; ++b) {
-        for (int k = 0; k < K; ++k) {
+    init_data<ElementA, ElementSF, ElementB, SFVecSize, DEBUG_INPUT_A, DEBUG_INPUT_SFA, DEBUG_INPUT_B>(h_A, h_SFA, h_B, d_A, d_SFA, d_B, B, M, N, K);
 
-            // Init A
-            for (int m = 0; m < M; ++m) {
-                if (cutlass::sizeof_bits<ElementA>::value == 4) {
-                    uint8_t *ptr = reinterpret_cast<uint8_t *>(h_A);
-
-                    if (k % 2 == 0) {
-                        if constexpr (DEBUG_INPUT_A) {
-                            ptr[b * M * K / 2 + m * K / 2 + k / 2] = uint8_t(1 | (1 << 4));
-                        }
-                        else {
-                            ptr[b * M * K / 2 + m * K / 2 + k / 2] = uint8_t(rand() % 16 | ((rand() % 16) << 4));
-                        }
-                    }
-                
-                    // Init A scale
-                    if (k % SFVecSize == 0) {
-                        if constexpr (DEBUG_INPUT_SFA) {
-                            h_SFA[(b * M * K + m * K + k) / SFVecSize] = ElementSF(1);
-                        }
-                        else {
-                            h_SFA[(b * M * K + m * K + k) / SFVecSize] = ElementSF((rand() % 9) - 16);
-                        }
-                    }
-                
-                }
-                else {
-                    if constexpr (DEBUG_INPUT_A) {
-                        h_A[b * M * K + m * K + k] = ElementA(1);
-                    }
-                    else {
-                        h_A[b * M * K + m * K + k] = ElementA(rand() % 16);
-                    }
-                }
-            }
-            
-            // Init B
-            for (int n = 0; n < N; ++n) {
-                if constexpr (DEBUG_INPUT_B) {
-                    h_B[b * N * K + n * K + k] = ElementB(1);
-                }
-                else{
-                    h_B[b * N * K + n * K + k] = ElementB(rand() % 16);
-                }
-            }
-        }
+    auto init_end = std::chrono::high_resolution_clock::now();
+    auto init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(init_end - init_start);
+    if (ENABLE_TIMER) {
+        std::cout << "Data initialization time: " << init_duration.count() << " ms" << std::endl;
     }
 
 
     // print h_SFA
     if (PRINT_INPUT_SF_A) {
         printf("---------------- input scale factor A ----------------\n");
-        for (int b = 0; b < B; b++) {
+        for (int b = 0; b < 2; b++) {
             printf("---- batch %d ----\n", b);
-            for (int m = 0; m < M; m++) {
+            for (int m = 0; m < 20; m++) {
                 printf("m %d:   ", m);
                 for (int k = 0; k < K; k+=SFVecSize) {
                     printf("%d:%f  ", k, float(h_SFA[(b * M * K + m * K + k) / SFVecSize]));
@@ -167,26 +129,36 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
 
     if(PRINT_INPUT)
     {
-        using Fragment_temp = cutlass::Array<ElementA, 2>;
-        // print input matrix A
         printf("---------------- input matrix A ----------------\n");
-        for (int m = 0; m < 20; ++m) {
-            for (int k = 0; k < 64; k+=2) {
-                Fragment_temp temp_A = *reinterpret_cast<Fragment_temp *>(&h_A[m * K + k]);
+        if (cutlass::sizeof_bits<ElementA>::value == 4) {
+            using Fragment_temp = cutlass::Array<ElementA, 2>;
+            for (int m = 0; m < 20; ++m) {
+                for (int k = 0; k < 64; k+=2) {
+                    Fragment_temp temp_A = *reinterpret_cast<Fragment_temp *>(&h_A[m * K + k]);
 
-                printf("%d:%.0f  \n", k, float(temp_A[0]));
-                printf("%d:%.0f  \n", k + 1, float(temp_A[1]));
+                    printf("%d:%.0f  ", k, float(temp_A[0]));
+                    printf("%d:%.0f  ", k + 1, float(temp_A[1]));
+                }
+                printf("\n");
+            }
+        }
+        else {
+            for (int m = 0; m < 20; ++m) {
+                for (int k = 0; k < 64; k++) {
+                    printf("%d:%.0f  ", k, float(h_A[m * K + k]));
+                }
+                printf("\n");
+            }
+        }
+
+        // print input vector B
+        printf("---------------- input vector B ----------------\n");
+        for (int n = 0; n < N; n++) {
+            for (int k = 0; k < 64; k+=2) {
+                printf("%d:%.0f  ", k, float(h_B[n * K + k]));
             }
             printf("\n");
         }
-        // print input vector B
-        printf("---------------- input vector B ----------------\n");
-        for (int k = 0; k < 64; k+=2) {
-            Fragment_temp temp_B = *reinterpret_cast<Fragment_temp *>(&h_B[k / 2]);
-            printf("%d:%.0f  ", k, float(temp_B[0]));
-            printf("%d:%.0f  ", k, float(temp_B[1]));
-        }
-        printf("\n");
     }
 
     // copy input tensor from host to device
@@ -293,6 +265,8 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
         throw std::runtime_error("[CUTLASS Error][jiangs] " + err_msg);
     }
 
+    init_start = std::chrono::high_resolution_clock::now();
+
     cudaEvent_t _event_start_;
     cudaEvent_t _event_end_;
     float _event_time_;
@@ -317,7 +291,13 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     cudaEventElapsedTime(&_event_time_, _event_start_, _event_end_);
     float _event_time_once_ = _event_time_ / runs;
     printf("%10.3fus\n", _event_time_once_ * 1000);
-    
+
+    init_end = std::chrono::high_resolution_clock::now();
+    init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(init_end - init_start);
+    if (ENABLE_TIMER) {
+        std::cout << "Kernel execution time: " << init_duration.count() << " ms" << std::endl;
+    }
+
     float bytes_of_A = float(B) * float(M) * float(K) * cutlass::sizeof_bits<ElementA>::value / 8;
     float bytes_of_B = float(B) * float(N) * float(K) * cutlass::sizeof_bits<ElementB>::value / 8;
 
@@ -353,47 +333,14 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
         memcpy(lut, tmp, sizeof(lut));
     }
 
-    for (int b = 0; b < B; b++) {
-        for (int m = 0; m < M; m++) {
-            for (int n = 0; n < N; n++) {
-                float accu[kSplitKSlices] = {0};
-                for (int k = 0; k < K; k++) {
+    init_start = std::chrono::high_resolution_clock::now();
 
-                    int k_slice_id = k / (K / kSplitKSlices);
+    ref_gemm<ElementA, ElementSF, ElementB, ElementC, SFVecSize, kSplitKSlices>(h_C_ref, d_A, d_SFA, d_B, B, M, N, K);
 
-                    if (cutlass::sizeof_bits<ElementA>::value == 4) {
-                        uint8_t *ptr = reinterpret_cast<uint8_t *>(h_A);
-                        uint8_t packed_val = ptr[b * M * K / 2 + m * K / 2 + k / 2];
-
-                        int idx;
-                        if (k % 2 == 0) {
-                            idx = int(packed_val & 0x0F);
-                        }
-                        else {
-                            idx = int((packed_val >> 4) & 0x0F);
-                        }
-    
-                        ElementB val_B = h_B[b * N * K + n * K + k];
-                        ElementSF val_SFA = h_SFA[(b * M * K + m * K + k) / SFVecSize];
-    
-                        accu[k_slice_id] += cutlass::half_t(lut[idx]) * cutlass::half_t(val_B) * float(val_SFA);
-                    }
-                    else {
-                        ElementA val_A = h_A[b * M * K + m * K + k];
-                        ElementB val_B = h_B[b * N * K + n * K + k];
-    
-                        accu[k_slice_id] += cutlass::half_t(val_A) * cutlass::half_t(val_B);
-                    }
-                }
-
-                ElementC accum = ElementC(0);
-                for (int k_slice_id = 0; k_slice_id < kSplitKSlices; k_slice_id++) {
-                    accum += ElementC(alpha * accu[k_slice_id]);
-                }
-
-                h_C_ref[b * M * N + n * M + m] = ElementC(accum);
-            }
-        }
+    init_end = std::chrono::high_resolution_clock::now();
+    init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(init_end - init_start);
+    if (ENABLE_TIMER) {
+        std::cout << "Reference calculation time: " << init_duration.count() << " ms" << std::endl;
     }
 
     if (PRINT_OUTPUT) {
@@ -413,6 +360,8 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
         }
     }
 
+    init_start = std::chrono::high_resolution_clock::now();
+
     float max_abs_error = 0.0f;
     for (int b = 0; b < B; ++b) {
         for (int n = 0; n < N; ++n) {
@@ -425,6 +374,12 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
         }
     }
     printf("max_abs_error = %f\n", max_abs_error);
+
+    init_end = std::chrono::high_resolution_clock::now();
+    init_duration = std::chrono::duration_cast<std::chrono::milliseconds>(init_end - init_start);
+    if (ENABLE_TIMER) {
+        std::cout << "Max absolute error calculation time: " << init_duration.count() << " ms" << std::endl;
+    }
 }
 
 
