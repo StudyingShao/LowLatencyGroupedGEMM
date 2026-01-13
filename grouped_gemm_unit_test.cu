@@ -18,7 +18,7 @@ const bool DEBUG_INPUT_A = false;
 const bool DEBUG_INPUT_B = false;
 const bool DEBUG_INPUT_SFA = false;
 
-void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
+void test_fp4_gemv(size_t B, size_t M, size_t N, size_t K, size_t warm_up_runs, size_t runs)
 {
     using ElementA = cutlass::int4b_t;
     // using ElementA = cutlass::float_e2m1_t;
@@ -344,8 +344,8 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
     }
 
     if (PRINT_OUTPUT) {
-        const int PRINT_NUM = 50;
-        // const int PRINT_NUM = 9999999999999;
+        const size_t PRINT_NUM = 50;
+        // const size_t PRINT_NUM = 9999999999999;
 
         printf("---------------- output vector C ----------------\n");
         printf("out  ref\n");
@@ -385,14 +385,14 @@ void test_fp4_gemv(int B, int M, int N, int K, int warm_up_runs, int runs)
 
 int main(int argc, char *argv[])
 {    
-    int B = std::stoi(argv[1]);
-    int M = std::stoi(argv[2]);
-    int N = std::stoi(argv[3]);
-    int K = std::stoi(argv[4]);
-    int warm_up_runs = std::stoi(argv[5]);
-    int runs = std::stoi(argv[6]);
+    size_t B = std::stoi(argv[1]);
+    size_t M = std::stoi(argv[2]);
+    size_t N = std::stoi(argv[3]);
+    size_t K = std::stoi(argv[4]);
+    size_t warm_up_runs = std::stoi(argv[5]);
+    size_t runs = std::stoi(argv[6]);
 
-    printf("GEMV B %d M %d N %d K %d warm_up_runs %d runs %d\n", B, M, N, K, warm_up_runs, runs);
+    printf("GEMV B %ld M %ld N %ld K %ld warm_up_runs %ld runs %ld\n", B, M, N, K, warm_up_runs, runs);
 
     test_fp4_gemv(B, M, N, K, warm_up_runs, runs);
     
