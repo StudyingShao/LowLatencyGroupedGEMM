@@ -1,6 +1,8 @@
 # low_latency_grouped_gemm Standalone
 
-Standalone extraction of MaloGEMM's current low-latency grouped GEMM path.
+Standalone low-latency grouped GEMM kernels for Hopper GPUs.  The package
+contains the existing packed-INT4 weight / FP8 activation path and an additive
+MXFP4 weight / per-token FP8 activation path.
 
 The implementation is under:
 
@@ -19,7 +21,9 @@ third_party/cutlass/include
 
 ```bash
 cmake -S . -B build
-cmake --build build -j --target test_low_latency_grouped_gemm bench_low_latency_grouped_gemm
+cmake --build build -j --target \
+  test_low_latency_grouped_gemm bench_low_latency_grouped_gemm \
+  test_low_latency_mxfp4_fp8 bench_low_latency_mxfp4_fp8
 ```
 
 By default the build targets Hopper `sm_90a`. Override if needed:
@@ -37,34 +41,42 @@ cmake -S . -B build \
 
 ## Correctness
 
+Packed INT4 x FP8:
+
 ```bash
-CUDA_VISIBLE_DEVICES=3 CLOCK_GPU_INDEX=3 \
-  ./build/low_latency_grouped_gemm/test_low_latency_grouped_gemm \
+./build/low_latency_grouped_gemm/test_low_latency_grouped_gemm \
   target192 dsched 64
+```
+
+MXFP4 x FP8:
+
+```bash
+./build/low_latency_grouped_gemm/test_low_latency_mxfp4_fp8
 ```
 
 ## Benchmark
 
-Production-style prebuilt device schedule:
+Packed INT4 x FP8 with a prebuilt device schedule:
 
 ```bash
-CUDA_VISIBLE_DEVICES=3 CLOCK_GPU_INDEX=3 LOW_LATENCY_GROUPED_GEMM_BUILD_ONCE=1 \
+LOW_LATENCY_GROUPED_GEMM_BUILD_ONCE=1 \
   ./build/low_latency_grouped_gemm/bench_low_latency_grouped_gemm \
   1000 50 target192 dsched default 64
 ```
 
-Full local sweep with clock sampling:
+MXFP4 x FP8, including counter reset, device schedule builder, and main kernel:
 
 ```bash
-CUDA_VISIBLE_DEVICES=3 CLOCK_GPU_INDEX=3 \
-  ./low_latency_grouped_gemm/bench_latest_shapes.sh
+./build/low_latency_grouped_gemm/bench_low_latency_mxfp4_fp8 \
+  --warmup 20 --iters 50
 ```
 
-## Current Reference Number
+Run one MXFP4 M value without the correctness pass:
 
-Latest MaloGEMM snapshot on physical GPU 3, `scale_group_size=64`:
-
-```text
-profile / shape       FC1 us    FC2 us    total us
-target192 / default   65.2266   37.0732   102.2998
+```bash
+./build/low_latency_grouped_gemm/bench_low_latency_mxfp4_fp8 \
+  --m 48 --warmup 20 --iters 50 --no-check
 ```
+
+See [`low_latency_grouped_gemm/README.md`](low_latency_grouped_gemm/README.md)
+for tensor layouts, schedule contracts, supported shapes, and timing semantics.
